@@ -46,7 +46,7 @@ internal static class ProjectionExpander
     internal static Expression ExpandExpression(LambdaExpression expression)
         => new InlineVisitor(new List<object>()).Visit(expression);
 
-    private static LambdaExpression Expand(object projection, Type source, Type destination, List<object> chain)
+    private static LambdaExpression Expand(object projection, Type source, Type destination, IReadOnlyList<object> chain)
     {
         var contract = typeof(IProjection<,>).MakeGenericType(source, destination);
         var cached = Cache.GetOrCreateValue(projection);
@@ -66,20 +66,11 @@ internal static class ProjectionExpander
         var selector = (LambdaExpression?)property.GetValue(projection)
             ?? throw new InvalidOperationException(MapperMessages.NullSelector(projection.GetType()));
 
-        chain.Add(projection);
+        var expanded = (LambdaExpression)new InlineVisitor(new List<object>(chain) { projection }).Visit(selector);
 
-        try
-        {
-            var expanded = (LambdaExpression)new InlineVisitor(chain).Visit(selector);
+        cached[contract] = expanded;
 
-            cached[contract] = expanded;
-
-            return expanded;
-        }
-        finally
-        {
-            chain.RemoveAt(chain.Count - 1);
-        }
+        return expanded;
     }
 
     private static object Evaluate(Expression expression, Type source, Type destination)
@@ -89,40 +80,11 @@ internal static class ProjectionExpander
             throw new InvalidOperationException(MapperMessages.NotEvaluable(source, destination, expression.ToString()));
         }
 
-        var value = Value(expression);
+        // Lo habitual es un campo de la clase de cierre (un parámetro de constructor capturado). Se compila sólo al
+        // expandir, y el resultado de Expand queda en caché.
+        var value = Expression.Lambda<Func<object?>>(Expression.Convert(expression, typeof(object))).Compile()();
 
         return value ?? throw new InvalidOperationException(MapperMessages.NullProjection(source, destination));
-    }
-
-    /// <summary>
-    /// Valor de una expresión sin parámetros. Un campo de un objeto capturado (lo habitual: un campo o un parámetro de
-    /// constructor) se lee directamente; el resto se compila.
-    /// </summary>
-    /// <param name="expression">Expresión sin parámetros.</param>
-    /// <returns>Su valor.</returns>
-    private static object? Value(Expression expression)
-    {
-        if (expression is ConstantExpression constant)
-        {
-            return constant.Value;
-        }
-
-        if (expression is MemberExpression member && member.Member is FieldInfo field)
-        {
-            if (member.Expression is null)
-            {
-                return field.GetValue(null);
-            }
-
-            var instance = Value(member.Expression);
-
-            if (instance is not null)
-            {
-                return field.GetValue(instance);
-            }
-        }
-
-        return Expression.Lambda<Func<object?>>(Expression.Convert(expression, typeof(object))).Compile(preferInterpretation: true)();
     }
 
     /// <summary>
@@ -130,13 +92,13 @@ internal static class ProjectionExpander
     /// </summary>
     private sealed class InlineVisitor : ExpressionVisitor
     {
-        private readonly List<object> chain;
+        private readonly IReadOnlyList<object> chain;
 
         /// <summary>
         /// Inicializa una nueva instancia de la clase <see cref="InlineVisitor"/>.
         /// </summary>
         /// <param name="chain">Proyecciones que se están expandiendo, para detectar ciclos.</param>
-        internal InlineVisitor(List<object> chain) => this.chain = chain;
+        internal InlineVisitor(IReadOnlyList<object> chain) => this.chain = chain;
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
@@ -202,7 +164,11 @@ internal static class ProjectionExpander
 
         protected override Expression VisitParameter(ParameterExpression node)
         {
-            found |= !declared.Contains(node);
+            if (!declared.Contains(node))
+            {
+                found = true;
+            }
+
             return base.VisitParameter(node);
         }
     }

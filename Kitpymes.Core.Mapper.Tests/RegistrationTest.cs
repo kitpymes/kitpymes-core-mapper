@@ -67,6 +67,25 @@ namespace Kitpymes.Core.Mapper.Tests
         }
 
         [TestMethod]
+        public void LoadMapper_Passing_ClassWithTwoContracts_Returns_ContractsInNameOrder()
+        {
+            var services = new ServiceCollection().LoadMapper(o => o.WithMap<UserSessionMap>());
+
+            var contracts = services.Where(d => d.ServiceType.IsInterface && d.ServiceType.Namespace == "Kitpymes.Core.Mapper").Select(d => d.ServiceType).ToArray();
+
+            CollectionAssert.AreEqual(new[] { typeof(IMapper<User, UserSession>), typeof(IProjection<User, UserSession>) }, contracts);
+        }
+
+        [TestMethod]
+        public void LoadMapper_Passing_AssemblyWithTypesThatDoNotLoad_Returns_TheTypesThatLoad()
+        {
+            var services = new ServiceCollection().LoadMapper(o => o.WithAssemblies(new PartiallyLoadedAssembly()));
+
+            Assert.AreEqual(1, services.Count(d => d.ServiceType == typeof(IMapper<Permission, PermissionDto>)));
+            Assert.IsFalse(services.Any(d => d.ServiceType == typeof(IProjection<Permission, PermissionDto>)));
+        }
+
+        [TestMethod]
         public void LoadMapper_Passing_ClassWithBothContracts_Returns_OneInstance()
         {
             using var provider = new ServiceCollection().LoadMapper(o => o.WithAssemblies(Ok)).BuildServiceProvider();
@@ -223,6 +242,13 @@ namespace Kitpymes.Core.Mapper.Tests
 
             Assert.AreSame(options, options.WithAssemblies(Ok));
             Assert.AreSame(options, options.WithMap<PermissionDtoMapper>());
+        }
+
+        /// <summary>Ensamblado del que sólo se puede cargar PermissionDtoMapper: GetTypes lanza como con una dependencia que falta.</summary>
+        private sealed class PartiallyLoadedAssembly : Assembly
+        {
+            public override Type[] GetTypes()
+                => throw new ReflectionTypeLoadException(new Type?[] { typeof(PermissionDtoMapper), null }, new Exception?[] { null, new TypeLoadException("falta") });
         }
 
         /// <summary>Implementa un contrato libre y otro ya ocupado: no puede quedar nada registrado a medias.</summary>

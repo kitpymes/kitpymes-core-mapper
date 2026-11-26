@@ -75,11 +75,6 @@ internal sealed class MapperRegistry
             pending.Add(contract);
         }
 
-        if (pending.Count == 0)
-        {
-            return;
-        }
-
         if (!services.Any(d => d.ServiceType == type))
         {
             services.AddSingleton(type);

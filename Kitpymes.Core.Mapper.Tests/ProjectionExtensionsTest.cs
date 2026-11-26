@@ -212,6 +212,16 @@ namespace Kitpymes.Core.Mapper.Tests
         }
 
         [TestMethod]
+        public void Expand_Passing_ProjectionThatUsesParameterTwice_Throws_InvalidOperationException()
+        {
+            Expression<Func<Holder, PermissionDto>> selector = h => (h.Projection ?? h.Projection)!.Inline(h.Permission);
+
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() => selector.Expand());
+
+            StringAssert.StartsWith(exception.Message, "La proyección anidada IProjection<Permission, PermissionDto> no se puede evaluar sin los parámetros de la expresión: ");
+        }
+
+        [TestMethod]
         public void Expand_Passing_NullNestedProjection_Throws_InvalidOperationException()
         {
             IProjection<Permission, PermissionDto>? none = null;

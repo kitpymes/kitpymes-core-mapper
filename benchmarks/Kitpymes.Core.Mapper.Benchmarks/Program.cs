@@ -62,13 +62,19 @@ public class MapBenchmarks
         _adapter = new AutoMapperAdapter<Role, RoleDto>(_autoMapper);
     }
 
+    // El mismo código que RoleDtoMapper y MapAll, sin interfaces ni inyección: lo que cuesta la librería es la diferencia.
     [Benchmark(Baseline = true, Description = "A mano")]
-    public RoleDto Manual() => new ()
+    public RoleDto Manual()
     {
-        Id = _role.Id,
-        Name = _role.Name,
-        Permissions = _role.Permissions.Select(p => new PermissionDto { Id = p.Id, Name = p.Name }).ToList(),
-    };
+        var permissions = new List<PermissionDto>(_role.Permissions.Count);
+
+        foreach (var p in _role.Permissions)
+        {
+            permissions.Add(new PermissionDto { Id = p.Id, Name = p.Name });
+        }
+
+        return new RoleDto { Id = _role.Id, Name = _role.Name, Permissions = permissions };
+    }
 
     [Benchmark(Description = "Kitpymes IMapper")]
     public RoleDto KitpymesMap() => _kitpymes.Map(_role);
