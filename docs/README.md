@@ -126,7 +126,25 @@ public sealed partial class PermissionMapperly : IMapper<Permission, PermissionS
 
 ## Rendimiento
 
-Pendiente: los números del benchmark contra AutoMapper se añaden antes de publicar.
+Benchmark contra AutoMapper 12.0.1 (la última con licencia MIT), en el job `benchmark` de la pipeline: BenchmarkDotNet 0.15.2, `--job short`, .NET 10.0.15, máquina de GitHub (AMD EPYC 7763, 2 núcleos). La memoria por llamada es determinista; el tiempo cambia de una ejecución a otra y sólo vale como orden de magnitud. La línea base es el mismo código escrito a mano, sin la librería.
+
+**Mapear en memoria** un rol con 10 permisos (`IMapper<Role, RoleDto>`, con el `IMapper` de los permisos dentro):
+
+| | Tiempo | Memoria |
+|---|---:|---:|
+| A mano | 119 ns | 584 B |
+| Kitpymes `IMapper` | 126 ns | 584 B |
+| AutoMapper `Map` | 278 ns | 776 B |
+
+**Proyectar con EF Core** (Sqlite en memoria, 100 usuarios con rol y permisos, consulta entera con `ToListAsync`):
+
+| | Tiempo | Memoria |
+|---|---:|---:|
+| `Select` a mano | 2,75 ms | 805 KB |
+| Kitpymes `ProjectTo` | 2,73 ms | 799 KB |
+| AutoMapper `ProjectTo` | 2,79 ms | 800 KB |
+
+En memoria, la librería cuesta lo que una llamada a una interfaz, porque el mapeo es el código que escribe quien la usa. En una consulta manda EF Core: las tres formas cuestan lo mismo. La expansión de `Inline` se hace una vez por proyección y queda en caché.
 
 ## Licencia
 
