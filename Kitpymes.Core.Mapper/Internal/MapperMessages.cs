@@ -32,8 +32,8 @@ internal static class MapperMessages
     internal static string NullSelector(Type projection)
         => $"Selector de {projection.FullName} es nulo.";
 
-    internal static string Cycle(IEnumerable<object> chain, object repeated)
-        => $"Ciclo de proyecciones: {string.Join(" -> ", chain.Select(p => p.GetType().Name).Append(repeated.GetType().Name))}.";
+    internal static string Cycle(IEnumerable<KeyValuePair<object, Type>> chain, KeyValuePair<object, Type> repeated)
+        => $"Ciclo de proyecciones: {string.Join(" -> ", chain.Append(repeated).Select(p => $"{p.Key.GetType().Name} ({Name(p.Value)})"))}.";
 
     internal static string NotConcrete(Type type)
         => $"{type.FullName} es abstracta o genérica abierta: WithMap necesita una clase concreta.";
