@@ -34,7 +34,7 @@ jobs:
       - id: mirar
         run: |
           if [ -f "$LIBRERIA/$LIBRERIA.csproj" ]; then echo "existe=true" >> "$GITHUB_OUTPUT"; else
-            echo "existe=false" >> "$GITHUB_OUTPUT"; echo "Todavía no está $LIBRERIA/$LIBRERIA.csproj: no hay nada que compilar ni publicar."; fi
+            echo "existe=false" >> "$GITHUB_OUTPUT"; echo "::warning::Todavía no está $LIBRERIA/$LIBRERIA.csproj: se omiten todos los jobs."; fi
 
   build-test:
     needs: libreria
@@ -109,46 +109,13 @@ jobs:
         run: dotnet test Solution.sln --no-build -c Debug --collect:"XPlat Code Coverage" --results-directory cobertura
 
       # Porcentaje de líneas de la librería, uniendo los informes de los proyectos de tests (una línea cuenta
-      # como cubierta si algún proyecto la ejecuta). Para la pipeline por debajo del 90 %.
+      # como cubierta si algún proyecto la ejecuta). Para la pipeline por debajo del 90 %. La comprobación se prueba
+      # antes contra informes falsos: por debajo, sin líneas de la librería o sin informes tiene que fallar.
+      - name: Probar la comprobación de la cobertura
+        run: bash .github/scripts/test-check-cobertura.sh
+
       - name: Cobertura (mínimo 90 %)
-        shell: python
-        run: |
-          import glob, os, xml.etree.ElementTree as ET
-          files = glob.glob("cobertura/**/coverage.cobertura.xml", recursive=True)
-          if not files:
-              print("::error::No se generó el informe de cobertura.")
-              raise SystemExit(1)
-          lines = {}
-          for f in files:
-              root = ET.parse(f).getroot()
-              sources = [x.text or "" for x in root.iter("source")]
-              base = sources[0] if sources else ""
-              for package in root.iter("package"):
-                  name = package.get("name")
-                  if name != os.environ["LIBRERIA"]:
-                      continue
-                  for cls in package.iter("class"):
-                      filename = os.path.normpath(os.path.join(base, cls.get("filename")))
-                      for line in cls.iter("line"):
-                          key = (filename, line.get("number"))
-                          lines[key] = lines.get(key, False) or int(line.get("hits", "0")) > 0
-          if not lines:
-              print("::error::El informe de cobertura no tiene líneas de la librería.")
-              raise SystemExit(1)
-          covered = sum(1 for hit in lines.values() if hit)
-          pct = 100 * covered / len(lines)
-          missing = {}
-          for (filename, number), hit in lines.items():
-              if not hit:
-                  missing.setdefault(os.path.basename(filename), []).append(int(number))
-          out = [f"### Cobertura de líneas: {pct:.1f} % ({covered}/{len(lines)})", "", "Líneas sin cubrir:"]
-          out += [f"- {f}: {sorted(set(v))}" for f, v in sorted(missing.items())]
-          print("\n".join(out))
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write("\n".join(out) + "\n")
-          if pct < 90:
-              print(f"::error::Cobertura de líneas {pct:.1f} %, por debajo del 90 %.")
-              raise SystemExit(1)
+        run: python3 .github/scripts/check-cobertura.py 90 $LIBRERIA $(find cobertura -name coverage.cobertura.xml)
 
       # Empaqueta igual que el job publish, para ver en la rama que la publicación no fallará al empaquetar.
       - name: Empaquetar como en la publicación

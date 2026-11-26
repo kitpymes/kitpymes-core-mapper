@@ -10,6 +10,7 @@ namespace Kitpymes.Core.Mapper.Internal;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
 /// Mensajes de error de la librería.
@@ -19,17 +20,29 @@ internal static class MapperMessages
     internal static string InlineExecuted(Type source, Type destination)
         => $"Inline de IProjection<{source.Name}, {destination.Name}> se ha ejecutado: la expresión no se ha expandido. Usar ProjectTo o Expand antes de ejecutar la consulta.";
 
-    internal static string NotEvaluable(Type source, Type destination, string expression)
-        => $"La proyección anidada IProjection<{source.Name}, {destination.Name}> no se puede evaluar sin los parámetros de la expresión: {expression}. Usar un campo, un parámetro de constructor o una constante.";
+    internal static string NotEvaluable(Type contract, string expression)
+        => $"La proyección anidada {Name(contract)} no se puede evaluar sin los parámetros de la expresión: {expression}. Usar un campo, un parámetro de constructor o una constante.";
 
-    internal static string NullProjection(Type source, Type destination)
-        => $"La proyección anidada IProjection<{source.Name}, {destination.Name}> es nula.";
+    internal static string NullProjection(Type contract)
+        => $"La proyección anidada {Name(contract)} es nula.";
+
+    internal static string InlineAsMethodGroup(Type contract)
+        => $"Inline de {Name(contract)} se ha usado sin lambda (Select(proyeccion.Inline)): no se puede sustituir. Escribir Select(x => proyeccion.Inline(x)).";
 
     internal static string NullSelector(Type projection)
         => $"Selector de {projection.FullName} es nulo.";
 
     internal static string Cycle(IEnumerable<object> chain, object repeated)
         => $"Ciclo de proyecciones: {string.Join(" -> ", chain.Select(p => p.GetType().Name).Append(repeated.GetType().Name))}.";
+
+    internal static string NotConcrete(Type type)
+        => $"{type.FullName} es abstracta o genérica abierta: WithMap necesita una clase concreta.";
+
+    internal static string NotSingleton(Type type, ServiceLifetime lifetime)
+        => $"{type.FullName} ya está registrado como {lifetime}: los mapeos y proyecciones son singleton. Quitar ese registro.";
+
+    internal static string TypesNotLoaded(string assembly)
+        => $"No se pueden cargar todos los tipos del ensamblado {assembly}: un mapeo o proyección podría quedarse sin registrar. Ver las excepciones internas.";
 
     internal static string NoContracts(Type type)
         => $"{type.FullName} no implementa IMapper<,> ni IProjection<,>.";

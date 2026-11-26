@@ -50,9 +50,14 @@ public static class MapperServiceCollectionExtensions
 
         foreach (var type in configured.Types)
         {
+            if (!IsCandidate(type))
+            {
+                throw new ArgumentException(MapperMessages.NotConcrete(type), nameof(options));
+            }
+
             var contracts = Contracts(type);
 
-            if (type.IsAbstract || type.ContainsGenericParameters || contracts.Count == 0)
+            if (contracts.Count == 0)
             {
                 throw new ArgumentException(MapperMessages.NoContracts(type), nameof(options));
             }
@@ -95,7 +100,11 @@ public static class MapperServiceCollectionExtensions
         }
         catch (ReflectionTypeLoadException exception)
         {
-            return exception.Types.OfType<Type>();
+            // No se siguen con los tipos que sí cargan: un mapeo que no carga desaparecería sin aviso, y
+            // MapperVerifier no puede verlo porque nunca se registró.
+            throw new InvalidOperationException(
+                MapperMessages.TypesNotLoaded(assembly.FullName ?? assembly.ToString()),
+                new AggregateException(exception.LoaderExceptions.OfType<Exception>()));
         }
     }
 }

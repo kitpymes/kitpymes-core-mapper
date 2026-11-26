@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Threading.Tasks;
 
 namespace Kitpymes.Core.Mapper.Tests
 {
@@ -291,6 +292,58 @@ namespace Kitpymes.Core.Mapper.Tests
         }
 
         [TestMethod]
+        public void Expand_Passing_ClassWhoseProjectionUsesItsOtherProjection_Returns_ExpressionWithoutFalseCycle()
+        {
+            var both = new UsesItsOtherProjection();
+
+            var result = new[] { Read }.AsQueryable().ProjectTo<Permission, string>(both).Single();
+
+            Assert.AreEqual("read!", result);
+        }
+
+        [TestMethod]
+        public void Expand_Passing_SelectorThatThrows_Throws_SelectorException()
+        {
+            var exception = Assert.ThrowsExactly<NotSupportedException>(() => new ThrowingSelector().Expand());
+
+            Assert.AreEqual("selector roto", exception.Message);
+        }
+
+        [TestMethod]
+        public void Expand_Passing_InlineAsMethodGroup_Throws_InvalidOperationException()
+        {
+            var permissions = new PermissionDtoProjection();
+            Expression<Func<Role, IEnumerable<PermissionDto>>> selector = r => r.Permissions.Select(permissions.Inline);
+
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() => selector.Expand());
+
+            Assert.AreEqual("Inline de IProjection<Permission, PermissionDto> se ha usado sin lambda (Select(proyeccion.Inline)): no se puede sustituir. Escribir Select(x => proyeccion.Inline(x)).", exception.Message);
+        }
+
+        [TestMethod]
+        public void Expand_Passing_ConstantThatIsNotInline_Returns_SameExpression()
+        {
+            var other = typeof(string).GetMethod(nameof(string.Trim), Type.EmptyTypes)!;
+            Expression<Func<Permission, object>> selector = p => other;
+
+            Assert.AreSame(selector, selector.Expand());
+        }
+
+        [TestMethod]
+        public void Expand_Passing_SameProjectionFromManyThreads_Returns_OneInstance()
+        {
+            for (var round = 0; round < 20; round++)
+            {
+                var projection = Users();
+                var results = new Expression<Func<User, UserDto>>[16];
+
+                Parallel.For(0, results.Length, i => results[i] = projection.Expand());
+
+                Assert.IsTrue(results.All(r => ReferenceEquals(r, results[0])), $"Vuelta {round}: Expand devolvió instancias distintas.");
+            }
+        }
+
+        [TestMethod]
         public void Inline_Executed_Throws_InvalidOperationException()
         {
             var exception = Assert.ThrowsExactly<InvalidOperationException>(() => new PermissionDtoProjection().Inline(Read));
@@ -333,6 +386,25 @@ namespace Kitpymes.Core.Mapper.Tests
             Expression<Func<Permission, string>> IProjection<Permission, string>.Selector => p => p.Name;
 
             Expression<Func<Permission, Guid>> IProjection<Permission, Guid>.Selector => p => p.Id;
+        }
+
+        private sealed class UsesItsOtherProjection : IProjection<Permission, string>, IProjection<Permission, Guid>
+        {
+            Expression<Func<Permission, string>> IProjection<Permission, string>.Selector
+            {
+                get
+                {
+                    IProjection<Permission, Guid> ids = this;
+                    return p => ids.Inline(p) == Guid.Empty ? p.Name + "?" : p.Name + "!";
+                }
+            }
+
+            Expression<Func<Permission, Guid>> IProjection<Permission, Guid>.Selector => p => p.Id;
+        }
+
+        private sealed class ThrowingSelector : IProjection<Permission, PermissionDto>
+        {
+            public Expression<Func<Permission, PermissionDto>> Selector => throw new NotSupportedException("selector roto");
         }
 
         private sealed class NullSelector : IProjection<Permission, PermissionDto>

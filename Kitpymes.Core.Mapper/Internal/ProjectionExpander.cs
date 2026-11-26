@@ -10,10 +10,12 @@ namespace Kitpymes.Core.Mapper.Internal;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 
 /// <summary>
 /// Sustituye las llamadas a <see cref="ProjectionExtensions.Inline"/> por el cuerpo de su proyección.
@@ -29,14 +31,13 @@ internal static class ProjectionExpander
     private static readonly ConditionalWeakTable<object, ConcurrentDictionary<Type, LambdaExpression>> Cache = new ();
 
     /// <summary>
-    /// Expande la expresión de una proyección, con caché por instancia.
+    /// Expande la expresión de una proyección, con caché por instancia y contrato.
     /// </summary>
-    /// <param name="projection">Instancia que implementa IProjection de los tipos dados.</param>
-    /// <param name="source">Tipo de origen.</param>
-    /// <param name="destination">Tipo de destino.</param>
+    /// <param name="projection">Instancia que implementa <paramref name="contract"/>.</param>
+    /// <param name="contract">IProjection cerrado que se expande.</param>
     /// <returns>La expresión expandida.</returns>
-    internal static LambdaExpression ExpandProjection(object projection, Type source, Type destination)
-        => Expand(projection, source, destination, new List<object>());
+    internal static LambdaExpression ExpandProjection(object projection, Type contract)
+        => Expand(projection, contract, new List<KeyValuePair<object, Type>>());
 
     /// <summary>
     /// Expande cualquier expresión, sin caché.
@@ -44,11 +45,10 @@ internal static class ProjectionExpander
     /// <param name="expression">Expresión.</param>
     /// <returns>La expresión expandida.</returns>
     internal static Expression ExpandExpression(LambdaExpression expression)
-        => new InlineVisitor(new List<object>()).Visit(expression);
+        => new InlineVisitor(new List<KeyValuePair<object, Type>>()).Visit(expression);
 
-    private static LambdaExpression Expand(object projection, Type source, Type destination, IReadOnlyList<object> chain)
+    private static LambdaExpression Expand(object projection, Type contract, IReadOnlyList<KeyValuePair<object, Type>> chain)
     {
-        var contract = typeof(IProjection<,>).MakeGenericType(source, destination);
         var cached = Cache.GetOrCreateValue(projection);
 
         if (cached.TryGetValue(contract, out var expression))
@@ -56,35 +56,53 @@ internal static class ProjectionExpander
             return expression;
         }
 
-        if (chain.Any(p => ReferenceEquals(p, projection)))
+        // El ciclo es la misma instancia con el mismo contrato: una clase puede implementar dos proyecciones y usar una en la otra.
+        if (chain.Any(p => ReferenceEquals(p.Key, projection) && p.Value == contract))
         {
-            throw new InvalidOperationException(MapperMessages.Cycle(chain, projection));
+            throw new InvalidOperationException(MapperMessages.Cycle(chain.Select(p => p.Key), projection));
         }
 
-        var property = contract.GetProperty(nameof(IProjection<object, object>.Selector))
-            ?? throw new MissingMemberException(contract.Name, nameof(IProjection<object, object>.Selector));
-        var selector = (LambdaExpression?)property.GetValue(projection)
-            ?? throw new InvalidOperationException(MapperMessages.NullSelector(projection.GetType()));
+        var expanded = (LambdaExpression)new InlineVisitor(new List<KeyValuePair<object, Type>>(chain) { new (projection, contract) })
+            .Visit(ReadSelector(projection, contract));
 
-        var expanded = (LambdaExpression)new InlineVisitor(new List<object>(chain) { projection }).Visit(selector);
-
-        cached[contract] = expanded;
-
-        return expanded;
+        // Si otro hilo la expandió a la vez, se devuelve la suya: así Expand da siempre la misma instancia.
+        return cached.GetOrAdd(contract, expanded);
     }
 
-    private static object Evaluate(Expression expression, Type source, Type destination)
+    [UnconditionalSuppressMessage("Trimming", "IL2070", Justification = "contract es siempre IProjection<,> cerrado, de esta librería: Selector se usa a través de la interfaz y no se recorta.")]
+    private static LambdaExpression ReadSelector(object projection, Type contract)
+    {
+        var property = contract.GetProperty(nameof(IProjection<object, object>.Selector))
+            ?? throw new MissingMemberException(contract.Name, nameof(IProjection<object, object>.Selector));
+
+        object? selector;
+
+        try
+        {
+            selector = property.GetValue(projection);
+        }
+        catch (TargetInvocationException exception)
+        {
+            // Que se vea la excepción del propio Selector, no el envoltorio de la reflexión.
+            ExceptionDispatchInfo.Throw(exception.InnerException!);
+            throw;
+        }
+
+        return (LambdaExpression?)selector ?? throw new InvalidOperationException(MapperMessages.NullSelector(projection.GetType()));
+    }
+
+    private static object Evaluate(Expression expression, Type contract)
     {
         if (FreeParameterFinder.HasFreeParameters(expression))
         {
-            throw new InvalidOperationException(MapperMessages.NotEvaluable(source, destination, expression.ToString()));
+            throw new InvalidOperationException(MapperMessages.NotEvaluable(contract, expression.ToString()));
         }
 
         // Lo habitual es un campo de la clase de cierre (un parámetro de constructor capturado). Se compila sólo al
-        // expandir, y el resultado de Expand queda en caché.
+        // expandir una proyección, y su resultado queda en caché.
         var value = Expression.Lambda<Func<object?>>(Expression.Convert(expression, typeof(object))).Compile()();
 
-        return value ?? throw new InvalidOperationException(MapperMessages.NullProjection(source, destination));
+        return value ?? throw new InvalidOperationException(MapperMessages.NullProjection(contract));
     }
 
     /// <summary>
@@ -92,13 +110,13 @@ internal static class ProjectionExpander
     /// </summary>
     private sealed class InlineVisitor : ExpressionVisitor
     {
-        private readonly IReadOnlyList<object> chain;
+        private readonly IReadOnlyList<KeyValuePair<object, Type>> chain;
 
         /// <summary>
         /// Inicializa una nueva instancia de la clase <see cref="InlineVisitor"/>.
         /// </summary>
         /// <param name="chain">Proyecciones que se están expandiendo, para detectar ciclos.</param>
-        internal InlineVisitor(IReadOnlyList<object> chain) => this.chain = chain;
+        internal InlineVisitor(IReadOnlyList<KeyValuePair<object, Type>> chain) => this.chain = chain;
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
@@ -107,12 +125,24 @@ internal static class ProjectionExpander
                 return base.VisitMethodCall(node);
             }
 
-            var types = node.Method.GetGenericArguments();
-            var projection = Evaluate(node.Arguments[0], types[0], types[1]);
-            var nested = Expand(projection, types[0], types[1], chain);
+            // El primer parámetro de Inline<TS, TD> es el IProjection<TS, TD> cerrado.
+            var contract = node.Method.GetParameters()[0].ParameterType;
+            var projection = Evaluate(node.Arguments[0], contract);
+            var nested = Expand(projection, contract, chain);
             var argument = Visit(node.Arguments[1]);
 
             return new ParameterReplacer(nested.Parameters[0], argument).Visit(nested.Body);
+        }
+
+        protected override Expression VisitConstant(ConstantExpression node)
+        {
+            // Select(roles.Inline) sin lambda: el árbol lleva el método como constante, que nadie puede sustituir.
+            if (node.Value is MethodInfo method && method.IsGenericMethod && method.GetGenericMethodDefinition() == InlineDefinition)
+            {
+                throw new InvalidOperationException(MapperMessages.InlineAsMethodGroup(method.GetParameters()[0].ParameterType));
+            }
+
+            return base.VisitConstant(node);
         }
     }
 

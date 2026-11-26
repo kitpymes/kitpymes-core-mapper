@@ -1,5 +1,4 @@
 using Kitpymes.Core.Mapper.Extensions;
-using Kitpymes.Core.Mapper.Settings;
 using Kitpymes.Core.Mapper.Tests.Mal;
 using Kitpymes.Core.Mapper.Tests.Ok;
 using Microsoft.Extensions.DependencyInjection;
@@ -77,12 +76,51 @@ namespace Kitpymes.Core.Mapper.Tests
         }
 
         [TestMethod]
-        public void LoadMapper_Passing_AssemblyWithTypesThatDoNotLoad_Returns_TheTypesThatLoad()
+        public void LoadMapper_Passing_AssemblyWithTypesThatDoNotLoad_Throws_InvalidOperationException()
         {
-            var services = new ServiceCollection().LoadMapper(o => o.WithAssemblies(new PartiallyLoadedAssembly()));
+            var services = new ServiceCollection();
 
-            Assert.AreEqual(1, services.Count(d => d.ServiceType == typeof(IMapper<Permission, PermissionDto>)));
-            Assert.IsFalse(services.Any(d => d.ServiceType == typeof(IProjection<Permission, PermissionDto>)));
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() => services.LoadMapper(o => o.WithAssemblies(new PartiallyLoadedAssembly())));
+
+            Assert.AreEqual("No se pueden cargar todos los tipos del ensamblado parcial: un mapeo o proyección podría quedarse sin registrar. Ver las excepciones internas.", exception.Message);
+            var inner = (AggregateException)exception.InnerException!;
+            Assert.AreEqual(1, inner.InnerExceptions.Count);
+            Assert.AreEqual("falta", inner.InnerExceptions[0].Message);
+            Assert.IsFalse(services.Any(d => d.ServiceType == typeof(IMapper<Permission, PermissionDto>)), "No se registra nada de ese ensamblado.");
+        }
+
+        [TestMethod]
+        public void LoadMapper_Passing_ContractRegisteredWithKey_Returns_ContractAlsoRegisteredByLoadMapper()
+        {
+            var services = new ServiceCollection();
+            services.AddKeyedSingleton<IMapper<Permission, PermissionDto>, PermissionDtoMapper>("otro");
+
+            services.LoadMapper(o => o.WithMap<PermissionDtoMapper>());
+
+            Assert.AreEqual(1, services.Count(d => d.ServiceType == typeof(IMapper<Permission, PermissionDto>) && !d.IsKeyedService));
+        }
+
+        [TestMethod]
+        public void LoadMapper_Passing_ClassAlreadyRegisteredAsScoped_Throws_InvalidOperationException()
+        {
+            var services = new ServiceCollection();
+            services.AddScoped<PermissionDtoMapper>();
+
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() => services.LoadMapper(o => o.WithMap<PermissionDtoMapper>()));
+
+            Assert.AreEqual($"{typeof(PermissionDtoMapper).FullName} ya está registrado como Scoped: los mapeos y proyecciones son singleton. Quitar ese registro.", exception.Message);
+            Assert.IsFalse(services.Any(d => d.ServiceType == typeof(IMapper<Permission, PermissionDto>)));
+        }
+
+        [TestMethod]
+        public void LoadMapper_Passing_ClassAlreadyRegisteredWithKeyAsScoped_Returns_SingletonAdded()
+        {
+            var services = new ServiceCollection();
+            services.AddKeyedScoped<PermissionDtoMapper>("otro");
+
+            services.LoadMapper(o => o.WithMap<PermissionDtoMapper>());
+
+            Assert.AreEqual(ServiceLifetime.Singleton, services.Single(d => d.ServiceType == typeof(PermissionDtoMapper) && !d.IsKeyedService).Lifetime);
         }
 
         [TestMethod]
@@ -200,7 +238,10 @@ namespace Kitpymes.Core.Mapper.Tests
         [TestMethod]
         public void LoadMapper_Passing_WithMapOfAbstractClass_Throws_ArgumentException()
         {
-            _ = Assert.ThrowsExactly<ArgumentException>(() => new ServiceCollection().LoadMapper(o => o.WithMap<AbstractMap>()));
+            var exception = Assert.ThrowsExactly<ArgumentException>(() => new ServiceCollection().LoadMapper(o => o.WithMap<AbstractMap>()));
+
+            Assert.AreEqual("options", exception.ParamName);
+            StringAssert.StartsWith(exception.Message, $"{typeof(AbstractMap).FullName} es abstracta o genérica abierta: WithMap necesita una clase concreta.");
         }
 
         [TestMethod]
@@ -222,7 +263,7 @@ namespace Kitpymes.Core.Mapper.Tests
         [TestMethod]
         public void WithAssemblies_Passing_Null_Throws_ArgumentNullException()
         {
-            var exception = Assert.ThrowsExactly<ArgumentNullException>(() => new MapperOptions().WithAssemblies(null!));
+            var exception = Assert.ThrowsExactly<ArgumentNullException>(() => new ServiceCollection().LoadMapper(o => o.WithAssemblies(null!)));
 
             Assert.AreEqual("assemblies", exception.ParamName);
         }
@@ -230,7 +271,7 @@ namespace Kitpymes.Core.Mapper.Tests
         [TestMethod]
         public void WithAssemblies_Passing_NullElement_Throws_ArgumentNullException()
         {
-            var exception = Assert.ThrowsExactly<ArgumentNullException>(() => new MapperOptions().WithAssemblies(Ok, null!));
+            var exception = Assert.ThrowsExactly<ArgumentNullException>(() => new ServiceCollection().LoadMapper(o => o.WithAssemblies(Ok, null!)));
 
             Assert.AreEqual("assemblies", exception.ParamName);
         }
@@ -238,15 +279,18 @@ namespace Kitpymes.Core.Mapper.Tests
         [TestMethod]
         public void With_Methods_Return_SameOptions()
         {
-            var options = new MapperOptions();
-
-            Assert.AreSame(options, options.WithAssemblies(Ok));
-            Assert.AreSame(options, options.WithMap<PermissionDtoMapper>());
+            new ServiceCollection().LoadMapper(options =>
+            {
+                Assert.AreSame(options, options.WithAssemblies(Ok));
+                Assert.AreSame(options, options.WithMap<PermissionDtoMapper>());
+            });
         }
 
         /// <summary>Ensamblado del que sólo se puede cargar PermissionDtoMapper: GetTypes lanza como con una dependencia que falta.</summary>
         private sealed class PartiallyLoadedAssembly : Assembly
         {
+            public override string FullName => "parcial";
+
             public override Type[] GetTypes()
                 => throw new ReflectionTypeLoadException(new Type?[] { typeof(PermissionDtoMapper), null }, new Exception?[] { null, new TypeLoadException("falta") });
         }

@@ -15,9 +15,16 @@ using System.Reflection;
 /// <summary>
 /// Opciones para registrar los mapeos y proyecciones.
 /// </summary>
-public class MapperOptions
+public sealed class MapperOptions
 {
     internal const string ScanMessage = "Busca en los ensamblados, por reflexión, las clases que implementan IMapper o IProjection: no es compatible con trimming. Usar WithMap para cada clase.";
+
+    /// <summary>
+    /// Inicializa una nueva instancia de la clase <see cref="MapperOptions"/>. Sólo la crea <c>LoadMapper</c>.
+    /// </summary>
+    internal MapperOptions()
+    {
+    }
 
     /// <summary>
     /// Obtiene los ensamblados donde buscar.
