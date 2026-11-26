@@ -59,7 +59,7 @@ internal static class ProjectionExpander
         // El ciclo es la misma instancia con el mismo contrato: una clase puede implementar dos proyecciones y usar una en la otra.
         if (chain.Any(p => ReferenceEquals(p.Key, projection) && p.Value == contract))
         {
-            throw new InvalidOperationException(MapperMessages.Cycle(chain.Select(p => p.Key), projection));
+            throw new InvalidOperationException(MapperMessages.Cycle(chain, new (projection, contract)));
         }
 
         var expanded = (LambdaExpression)new InlineVisitor(new List<KeyValuePair<object, Type>>(chain) { new (projection, contract) })

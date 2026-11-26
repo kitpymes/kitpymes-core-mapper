@@ -263,7 +263,7 @@ namespace Kitpymes.Core.Mapper.Tests
 
             var exception = Assert.ThrowsExactly<InvalidOperationException>(() => a.Expand());
 
-            Assert.AreEqual("Ciclo de proyecciones: CycleA -> CycleB -> CycleA.", exception.Message);
+            Assert.AreEqual("Ciclo de proyecciones: CycleA (IProjection<Permission, String>) -> CycleB (IProjection<Permission, String>) -> CycleA (IProjection<Permission, String>).", exception.Message);
         }
 
         [TestMethod]
@@ -277,7 +277,7 @@ namespace Kitpymes.Core.Mapper.Tests
             _ = Assert.ThrowsExactly<InvalidOperationException>(() => b.Expand());
             var exception = Assert.ThrowsExactly<InvalidOperationException>(() => b.Expand());
 
-            Assert.AreEqual("Ciclo de proyecciones: CycleB -> CycleA -> CycleB.", exception.Message, "Un fallo no se guarda en la caché: se repite igual.");
+            Assert.AreEqual("Ciclo de proyecciones: CycleB (IProjection<Permission, String>) -> CycleA (IProjection<Permission, String>) -> CycleB (IProjection<Permission, String>).", exception.Message, "Un fallo no se guarda en la caché: se repite igual.");
         }
 
         [TestMethod]
@@ -299,6 +299,14 @@ namespace Kitpymes.Core.Mapper.Tests
             var result = new[] { Read }.AsQueryable().ProjectTo<Permission, string>(both).Single();
 
             Assert.AreEqual("read!", result);
+        }
+
+        [TestMethod]
+        public void Expand_Passing_CycleBetweenTwoContractsOfSameClass_Throws_InvalidOperationException()
+        {
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() => ((IProjection<Permission, string>)new MutualCycle()).Expand());
+
+            Assert.AreEqual("Ciclo de proyecciones: MutualCycle (IProjection<Permission, String>) -> MutualCycle (IProjection<Permission, Guid>) -> MutualCycle (IProjection<Permission, String>).", exception.Message);
         }
 
         [TestMethod]
@@ -400,6 +408,27 @@ namespace Kitpymes.Core.Mapper.Tests
             }
 
             Expression<Func<Permission, Guid>> IProjection<Permission, Guid>.Selector => p => p.Id;
+        }
+
+        private sealed class MutualCycle : IProjection<Permission, string>, IProjection<Permission, Guid>
+        {
+            Expression<Func<Permission, string>> IProjection<Permission, string>.Selector
+            {
+                get
+                {
+                    IProjection<Permission, Guid> ids = this;
+                    return p => ids.Inline(p).ToString();
+                }
+            }
+
+            Expression<Func<Permission, Guid>> IProjection<Permission, Guid>.Selector
+            {
+                get
+                {
+                    IProjection<Permission, string> names = this;
+                    return p => Guid.Parse(names.Inline(p));
+                }
+            }
         }
 
         private sealed class ThrowingSelector : IProjection<Permission, PermissionDto>
