@@ -153,8 +153,10 @@ namespace Kitpymes.Core.Mapper.Tests.EntityFrameworkCore
             var (context, scope) = Context();
             using (scope)
             {
-                var page = await context.Users.ProjectTo(Get<IProjection<User, UserDto>>())
-                    .Where(u => u.Role != null).OrderBy(u => u.Email).Skip(1).Take(1).ToListAsync();
+                // El filtro sobre un objeto construido por la proyección (u.Role != null del DTO) EF no lo traduce:
+                // se filtra antes de proyectar; ordenar y paginar sobre columnas del DTO, sí.
+                var page = await context.Users.Where(u => u.Role != null).ProjectTo(Get<IProjection<User, UserDto>>())
+                    .OrderBy(u => u.Email).Skip(1).Take(1).ToListAsync();
 
                 Assert.AreEqual("bea@x.es", page.Single().Email);
                 Assert.AreEqual("guest", page.Single().Role!.Name);

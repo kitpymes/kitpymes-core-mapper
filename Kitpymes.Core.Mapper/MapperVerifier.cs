@@ -29,8 +29,7 @@ public static class MapperVerifier
     /// <param name="provider">Proveedor de servicios ya construido.</param>
     public static void Verify(IServiceProvider provider)
     {
-        ArgumentNullException.ThrowIfNull(provider);
-
+        // Sin ThrowIfNull propio: GetService ya lanza ArgumentNullException con el mismo nombre de parámetro.
         var registry = provider.GetService<MapperRegistry>() ?? throw new InvalidOperationException(MapperMessages.NotLoaded());
         var errors = new List<string>();
 

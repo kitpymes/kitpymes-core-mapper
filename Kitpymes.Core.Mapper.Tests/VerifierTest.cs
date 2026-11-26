@@ -77,6 +77,26 @@ namespace Kitpymes.Core.Mapper.Tests
                 exception.Message);
         }
 
+        [TestMethod]
+        public void Verify_Passing_ProjectionReplacedByBrokenOne_Throws_OnlyTheReplacement()
+        {
+            var services = new ServiceCollection().LoadMapper(o => o.WithMap<GoodProjection>());
+            services.AddSingleton<IProjection<Permission, string>, BrokenProjection>();
+            using var provider = services.BuildServiceProvider();
+
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MapperVerifier.Verify(provider));
+
+            Assert.AreEqual(
+                "La configuración del mapper tiene errores:" + Environment.NewLine
+                + $"- IProjection<Permission, String> se resuelve a {typeof(BrokenProjection).FullName} y no a {typeof(GoodProjection).FullName}: alguien lo ha registrado a mano después de LoadMapper.",
+                exception.Message);
+        }
+
+        private sealed class GoodProjection : IProjection<Permission, string>
+        {
+            public Expression<Func<Permission, string>> Selector => p => p.Name;
+        }
+
         private sealed class NeedsMissingService(IFormatProvider format) : IMapper<Permission, string>
         {
             public string Map(Permission source) => source.Id.ToString(null, format);

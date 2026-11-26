@@ -32,8 +32,7 @@ public static class ProjectionExtensions
     /// <returns>La consulta proyectada.</returns>
     public static IQueryable<TDestination> ProjectTo<TSource, TDestination>(this IQueryable<TSource> source, IProjection<TSource, TDestination> projection)
     {
-        ArgumentNullException.ThrowIfNull(source);
-
+        // Sin ThrowIfNull de source: Queryable.Select ya lanza ArgumentNullException con el mismo nombre de parámetro.
         return source.Select(projection.Expand());
     }
 

@@ -96,6 +96,7 @@ Con eso, un `new RoleDto { Id = r.Id }` da el error CS9035, también dentro de l
 - **El argumento de `Inline` se copia** en cada uso que la proyección anidada hace de su parámetro. Usa una navegación (`u.Role`) o un parámetro, no una subconsulta (`u.Roles.First()`), que EF repetiría una vez por propiedad.
 - **La proyección anidada se evalúa al expandir:** tiene que ser un campo, un parámetro de constructor o una constante, no algo que dependa del parámetro de la expresión.
 - **`Selector` tiene que devolver lo mismo en cada lectura**, porque la expansión se guarda por instancia.
+- **Filtra antes de proyectar** lo que dependa de un objeto que construye la proyección (`u.Role != null` sobre el DTO): EF no lo traduce. Ordenar y paginar por columnas del DTO, sí.
 - **`EF.CompileQuery` no conoce `ProjectTo`:** dentro, usa `Select(projection.Expand())`.
 - **Trimming y NativeAOT:** `WithAssemblies` busca por reflexión y no es compatible. `WithMap<T>()` no busca en ensamblados.
 
