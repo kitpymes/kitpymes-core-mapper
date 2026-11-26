@@ -20,7 +20,8 @@ using System.Runtime.CompilerServices;
 /// </summary>
 internal static class ProjectionExpander
 {
-    private static readonly MethodInfo InlineDefinition = typeof(ProjectionExtensions).GetMethod(nameof(ProjectionExtensions.Inline))!;
+    private static readonly MethodInfo InlineDefinition = typeof(ProjectionExtensions).GetMethod(nameof(ProjectionExtensions.Inline))
+        ?? throw new MissingMethodException(nameof(ProjectionExtensions), nameof(ProjectionExtensions.Inline));
 
     /// <summary>
     /// Expresiones ya expandidas, por instancia y por contrato: una misma clase puede implementar varias IProjection.
@@ -60,7 +61,9 @@ internal static class ProjectionExpander
             throw new InvalidOperationException(MapperMessages.Cycle(chain, projection));
         }
 
-        var selector = (LambdaExpression?)contract.GetProperty(nameof(IProjection<object, object>.Selector))!.GetValue(projection)
+        var property = contract.GetProperty(nameof(IProjection<object, object>.Selector))
+            ?? throw new MissingMemberException(contract.Name, nameof(IProjection<object, object>.Selector));
+        var selector = (LambdaExpression?)property.GetValue(projection)
             ?? throw new InvalidOperationException(MapperMessages.NullSelector(projection.GetType()));
 
         chain.Add(projection);
@@ -125,9 +128,16 @@ internal static class ProjectionExpander
     /// <summary>
     /// Cambia las llamadas a Inline por el cuerpo de su proyección (expandido a su vez).
     /// </summary>
-    /// <param name="chain">Proyecciones que se están expandiendo, para detectar ciclos.</param>
-    private sealed class InlineVisitor(List<object> chain) : ExpressionVisitor
+    private sealed class InlineVisitor : ExpressionVisitor
     {
+        private readonly List<object> chain;
+
+        /// <summary>
+        /// Inicializa una nueva instancia de la clase <see cref="InlineVisitor"/>.
+        /// </summary>
+        /// <param name="chain">Proyecciones que se están expandiendo, para detectar ciclos.</param>
+        internal InlineVisitor(List<object> chain) => this.chain = chain;
+
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
             if (!node.Method.IsGenericMethod || node.Method.GetGenericMethodDefinition() != InlineDefinition)
@@ -147,10 +157,23 @@ internal static class ProjectionExpander
     /// <summary>
     /// Cambia un parámetro por una expresión.
     /// </summary>
-    /// <param name="parameter">Parámetro que se cambia.</param>
-    /// <param name="replacement">Expresión que lo sustituye.</param>
-    private sealed class ParameterReplacer(ParameterExpression parameter, Expression replacement) : ExpressionVisitor
+    private sealed class ParameterReplacer : ExpressionVisitor
     {
+        private readonly ParameterExpression parameter;
+
+        private readonly Expression replacement;
+
+        /// <summary>
+        /// Inicializa una nueva instancia de la clase <see cref="ParameterReplacer"/>.
+        /// </summary>
+        /// <param name="parameter">Parámetro que se cambia.</param>
+        /// <param name="replacement">Expresión que lo sustituye.</param>
+        internal ParameterReplacer(ParameterExpression parameter, Expression replacement)
+        {
+            this.parameter = parameter;
+            this.replacement = replacement;
+        }
+
         protected override Expression VisitParameter(ParameterExpression node)
             => node == parameter ? replacement : base.VisitParameter(node);
     }
