@@ -52,14 +52,17 @@ public static class ProjectionExtensions
     {
         ArgumentNullException.ThrowIfNull(projection);
 
-        return (Expression<Func<TSource, TDestination>>)ProjectionExpander.ExpandProjection(projection, typeof(TSource), typeof(TDestination));
+        return (Expression<Func<TSource, TDestination>>)ProjectionExpander.ExpandProjection(projection, typeof(IProjection<TSource, TDestination>));
     }
 
     /// <summary>
     /// Sustituye en cualquier expresión las llamadas a <see cref="Inline"/> por el cuerpo de su proyección. Para un
     /// <c>Select</c> escrito a mano que usa proyecciones: <c>query.Select(((Expression&lt;Func&lt;User, X&gt;&gt;)(u => ...)).Expand())</c>.
     /// </summary>
-    /// <remarks>Sin caché: cada llamada recorre la expresión.</remarks>
+    /// <remarks>
+    /// Sin caché: cada llamada recorre la expresión y compila cada proyección anidada. Guardar el resultado (un campo
+    /// <c>static readonly</c>) en vez de llamarlo en cada petición; o mejor, escribir una <see cref="IProjection{TSource, TDestination}"/>.
+    /// </remarks>
     /// <typeparam name="TDelegate">Tipo del delegado de la expresión.</typeparam>
     /// <param name="expression">Expresión.</param>
     /// <returns>La expresión sin llamadas a <see cref="Inline"/>; la misma instancia si no tenía ninguna.</returns>

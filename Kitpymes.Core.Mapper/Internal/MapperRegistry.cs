@@ -67,7 +67,7 @@ internal sealed class MapperRegistry
                 continue;
             }
 
-            if (services.Any(d => d.ServiceType == contract))
+            if (services.Any(d => d.ServiceType == contract && !d.IsKeyedService))
             {
                 throw new InvalidOperationException(MapperMessages.RegisteredOutside(contract, type));
             }
@@ -75,9 +75,15 @@ internal sealed class MapperRegistry
             pending.Add(contract);
         }
 
-        if (!services.Any(d => d.ServiceType == type))
+        var existing = services.FirstOrDefault(d => d.ServiceType == type && !d.IsKeyedService);
+
+        if (existing is null)
         {
             services.AddSingleton(type);
+        }
+        else if (existing.Lifetime != ServiceLifetime.Singleton)
+        {
+            throw new InvalidOperationException(MapperMessages.NotSingleton(type, existing.Lifetime));
         }
 
         foreach (var contract in pending)

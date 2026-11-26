@@ -14,8 +14,8 @@ namespace Kitpymes.Core.Mapper;
 /// Se inyecta tal cual (<c>IMapper&lt;Role, RoleDto&gt;</c>) y se registra como singleton con <c>LoadMapper</c>:
 /// la implementación no debe guardar estado ni depender de servicios con ámbito (un <c>DbContext</c>).
 /// Para consultas de EF Core se usa <see cref="IProjection{TSource, TDestination}"/>: una expresión con
-/// <c>EF.Property</c> no vale en memoria. La nulabilidad la fijan los tipos: <c>IMapper&lt;Role?, RoleDto?&gt;</c>
-/// acepta y devuelve nulos; <c>IMapper&lt;Role, RoleDto&gt;</c>, no.
+/// <c>EF.Property</c> no vale en memoria. Las anotaciones de nulos (<c>IMapper&lt;Role?, RoleDto?&gt;</c>) sólo las mira el
+/// compilador: en ejecución es el mismo contrato que <c>IMapper&lt;Role, RoleDto&gt;</c>, así que no pueden convivir dos clases.
 /// </remarks>
 /// <typeparam name="TSource">Tipo de origen.</typeparam>
 /// <typeparam name="TDestination">Tipo de destino.</typeparam>

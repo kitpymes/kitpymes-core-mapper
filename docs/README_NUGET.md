@@ -59,11 +59,14 @@ var page = await context.Users.ProjectTo(userDtoProjection)
     .OrderBy(u => u.Email).Skip(20).Take(10).ToListAsync(ct);
 ```
 
-`ProjectTo(p)` es `Select(p.Expand())`. `Expand` cambia cada `Inline` por el cuerpo de su proyección y guarda el resultado por instancia. Un `Select` escrito a mano que use `Inline` se expande con `Expand()` sobre la propia expresión.
+`ProjectTo(p)` es `Select(p.Expand())`. `Expand` cambia cada `Inline` por el cuerpo de su proyección y guarda el resultado por instancia. Un `Select` escrito a mano que use `Inline` se expande con `Expand()` sobre la propia expresión; eso no se guarda en caché y compila cada proyección anidada, así que se guarda el resultado en un campo `static readonly` o, mejor, se escribe una `IProjection`.
 
 ### Registro y comprobación al arrancar
 
 ```csharp
+using Kitpymes.Core.Mapper;             // IMapper, IProjection, ProjectTo, Inline, MapperVerifier
+using Kitpymes.Core.Mapper.Extensions;  // LoadMapper
+
 builder.Services.LoadMapper(o => o.WithAssemblies(typeof(RoleDtoMapper).Assembly));
 // o una a una, sin buscar en ensamblados: o.WithMap<RoleDtoMapper>().WithMap<RoleDtoProjection>()
 
@@ -72,8 +75,8 @@ MapperVerifier.Verify(app.Services);   // y lo mismo en un test de arquitectura
 ```
 
 - Cada clase se registra como **singleton** una sola vez. Cada `IMapper`/`IProjection` que implementa apunta a esa instancia. Un mapeo no puede depender de servicios con ámbito (un `DbContext`).
-- `LoadMapper` lanza si dos clases implementan el mismo par, o si el par ya estaba registrado fuera de `LoadMapper`.
-- `MapperVerifier.Verify` resuelve todo lo registrado y expande cada proyección. Así salen al arrancar una dependencia que falta, una proyección anidada nula o un ciclo, y un par que alguien registró a mano después. No comprueba que EF traduzca la consulta: eso lo prueba un test contra la base de datos.
+- `LoadMapper` lanza si dos clases implementan el mismo par, si el par ya estaba registrado fuera de `LoadMapper` (los registros con clave no cuentan), si la clase ya estaba registrada con otro ciclo de vida, o si un ensamblado no carga todos sus tipos (un mapeo podría quedarse fuera sin aviso).
+- `MapperVerifier.Verify` resuelve todo lo registrado y expande cada proyección. Así salen al arrancar una dependencia que falta, una proyección anidada nula o un ciclo, y un par que alguien registró a mano después con otra clase. Las excepciones que hubo detrás van como excepción interna. No comprueba que EF traduzca la consulta: eso lo prueba un test contra la base de datos.
 - Si falta un mapeo que alguien inyecta, lo detecta el contenedor al construirse con `ValidateOnBuild` (activo por defecto en Development).
 
 ## Errores al compilar
@@ -94,11 +97,12 @@ Con eso, un `new RoleDto { Id = r.Id }` da el error CS9035, también dentro de l
 
 - **`IMapper` e `IProjection` van separados a propósito.** Una expresión con `EF.Property` lanza fuera de una consulta. Si un par se usa en los dos sitios, hay dos clases, y un test debe comprobar que dan lo mismo.
 - **El argumento de `Inline` se copia** en cada uso que la proyección anidada hace de su parámetro. Usa una navegación (`u.Role`) o un parámetro, no una subconsulta (`u.Roles.First()`), que EF repetiría una vez por propiedad.
+- **`Inline` siempre con lambda:** `r.Permissions.Select(p => permissions.Inline(p))`. `Select(permissions.Inline)` no se puede sustituir y `Expand` lanza.
 - **La proyección anidada se evalúa al expandir:** tiene que ser un campo, un parámetro de constructor o una constante, no algo que dependa del parámetro de la expresión.
 - **`Selector` tiene que devolver lo mismo en cada lectura**, porque la expansión se guarda por instancia.
 - **Filtra antes de proyectar** lo que dependa de un objeto que construye la proyección (`u.Role != null` sobre el DTO): EF no lo traduce. Ordenar y paginar por columnas del DTO, sí.
 - **`EF.CompileQuery` no conoce `ProjectTo`:** dentro, usa `Select(projection.Expand())`.
-- **Trimming y NativeAOT:** `WithAssemblies` busca por reflexión y no es compatible. `WithMap<T>()` no busca en ensamblados.
+- **Trimming y NativeAOT:** `WithAssemblies` busca por reflexión y no es compatible con trimming. `WithMap<T>()` no busca en ensamblados. La compatibilidad con NativeAOT no se ha probado.
 
 ## Desde AutoMapper
 
@@ -126,7 +130,7 @@ public sealed partial class PermissionMapperly : IMapper<Permission, PermissionS
 
 ## Rendimiento
 
-Benchmark contra AutoMapper 12.0.1 (la última con licencia MIT), en el job `benchmark` de la pipeline: BenchmarkDotNet 0.15.2, `--job short`, .NET 10.0.15, máquina de GitHub (AMD EPYC 7763, 2 núcleos). La memoria por llamada es determinista; el tiempo cambia de una ejecución a otra y sólo vale como orden de magnitud. La línea base es el mismo código escrito a mano, sin la librería.
+Benchmark contra AutoMapper 12.0.1 (MIT; la que usaba el backend, de antes del cambio a licencia comercial de la 15), en el job `benchmark` de la pipeline: BenchmarkDotNet 0.15.2, `--job short`, .NET 10.0.15, máquina de GitHub (AMD EPYC 7763, 2 núcleos). La memoria por llamada es determinista; el tiempo cambia de una ejecución a otra y sólo vale como orden de magnitud. La línea base es el mismo código escrito a mano, sin la librería.
 
 **Mapear en memoria** un rol con 10 permisos (`IMapper<Role, RoleDto>`, con el `IMapper` de los permisos dentro):
 
@@ -135,16 +139,17 @@ Benchmark contra AutoMapper 12.0.1 (la última con licencia MIT), en el job `ben
 | A mano | 119 ns | 584 B |
 | Kitpymes `IMapper` | 126 ns | 584 B |
 | AutoMapper `Map` | 278 ns | 776 B |
+| AutoMapper a través de un `IMapper` (adaptador de ejemplo) | 282 ns | 776 B |
 
 **Proyectar con EF Core** (Sqlite en memoria, 100 usuarios con rol y permisos, consulta entera con `ToListAsync`):
 
 | | Tiempo | Memoria |
 |---|---:|---:|
-| `Select` a mano | 2,75 ms | 805 KB |
-| Kitpymes `ProjectTo` | 2,73 ms | 799 KB |
-| AutoMapper `ProjectTo` | 2,79 ms | 800 KB |
+| `Select` a mano | 2,75 ms | ~805 KB |
+| Kitpymes `ProjectTo` | 2,73 ms | ~799 KB |
+| AutoMapper `ProjectTo` | 2,79 ms | ~800 KB |
 
-En memoria, la librería cuesta lo que una llamada a una interfaz, porque el mapeo es el código que escribe quien la usa. En una consulta manda EF Core: las tres formas cuestan lo mismo. La expansión de `Inline` se hace una vez por proyección y queda en caché.
+En memoria, la librería cuesta lo que una llamada a una interfaz, porque el mapeo es el código que escribe quien la usa. En una consulta manda EF Core: las tres formas cuestan lo mismo (la memoria de EF varía unos KB entre ejecuciones), y un test comprueba que el SQL de `ProjectTo` es el mismo que el del `Select` escrito a mano. La expansión de una `IProjection` se hace una vez por instancia y queda en caché.
 
 ## Licencia
 

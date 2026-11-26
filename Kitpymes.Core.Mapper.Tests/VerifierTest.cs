@@ -59,6 +59,9 @@ namespace Kitpymes.Core.Mapper.Tests
             Assert.AreEqual(3, lines.Length, exception.Message);
             Assert.AreEqual("La configuración del mapper tiene errores:", lines[0]);
             StringAssert.StartsWith(lines[1], "- IMapper<Permission, String>: InvalidOperationException: Unable to resolve service for type 'System.IFormatProvider'");
+            var inner = (AggregateException)exception.InnerException!;
+            Assert.AreEqual(2, inner.InnerExceptions.Count);
+            StringAssert.StartsWith(inner.InnerExceptions[0].Message, "Unable to resolve service for type 'System.IFormatProvider'");
             Assert.AreEqual("- IProjection<Permission, String>: InvalidOperationException: La proyección anidada IProjection<Permission, PermissionDto> es nula.", lines[2]);
         }
 
@@ -71,6 +74,7 @@ namespace Kitpymes.Core.Mapper.Tests
 
             var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MapperVerifier.Verify(provider));
 
+            Assert.IsNull(exception.InnerException, "Sin excepciones detrás, no hay excepción interna.");
             Assert.AreEqual(
                 "La configuración del mapper tiene errores:" + Environment.NewLine
                 + $"- IMapper<Permission, PermissionDto> se resuelve a {typeof(OtherPermissionMapper).FullName} y no a {typeof(PermissionDtoMapper).FullName}: alguien lo ha registrado a mano después de LoadMapper.",

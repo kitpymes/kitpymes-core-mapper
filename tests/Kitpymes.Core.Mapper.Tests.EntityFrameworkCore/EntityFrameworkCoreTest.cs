@@ -135,15 +135,25 @@ namespace Kitpymes.Core.Mapper.Tests.EntityFrameworkCore
         }
 
         [TestMethod]
-        public void ProjectTo_Passing_NestedProjections_Returns_SqlWithoutClientEvaluation()
+        public void ProjectTo_Passing_NestedProjections_Returns_SameSqlAsSelectWrittenByHand()
         {
             var (context, scope) = Context();
             using (scope)
             {
-                var sql = context.Users.ProjectTo(Get<IProjection<User, UserDto>>()).ToQueryString();
+                var kitpymes = context.Users.ProjectTo(Get<IProjection<User, UserDto>>()).ToQueryString();
+                var byHand = context.Users.Select(u => new UserDto
+                {
+                    Id = u.Id,
+                    Email = u.Email,
+                    Role = u.Role == null ? null : new RoleDto
+                    {
+                        Id = u.Role.Id,
+                        Name = u.Role.Name,
+                        Permissions = u.Role.Permissions.Select(p => new PermissionDto { Id = p.Id, Name = p.Name }),
+                    },
+                }).ToQueryString();
 
-                StringAssert.Contains(sql, "SELECT");
-                Assert.IsFalse(sql.Contains("Inline", StringComparison.Ordinal), sql);
+                Assert.AreEqual(byHand, kitpymes);
             }
         }
 
