@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="$(KitpymesRoot)docs/props/Common.Build.props" Condition="Exists('$(KitpymesRoot)docs/props/Common.Build.props')" />
+  <Import Project="$(KitpymesRoot)docs/props/Pack.Build.props" Condition="Exists('$(KitpymesRoot)docs/props/Pack.Build.props')" />
+
+  <PropertyGroup>
+    <Title>Kitpymes.Core.Mapper</Title>
+    <Description>Mapeo explícito sin reflexión: cada mapeo es una clase escrita a mano (IMapper en memoria, IProjection para IQueryable y EF Core), registrada en la inyección de dependencias. Proyecciones anidadas con Inline, que Expand sustituye para que EF Core las traduzca. Comprueba los registros al arrancar.</Description>
+    <PackageTags>Mapper, Mapeo, Mapping, Projection, Proyección, EntityFrameworkCore, IQueryable, Kitpymes</PackageTags>
+  </PropertyGroup>
+
+  <!-- Sirve también fuera de ASP.NET Core (consola, worker): sólo las abstracciones de inyección de dependencias. -->
+  <ItemGroup>
+    <FrameworkReference Remove="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>

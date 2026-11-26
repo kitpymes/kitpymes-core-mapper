@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="$(KitpymesRoot)docs/props/Common.Build.props" Condition="Exists('$(KitpymesRoot)docs/props/Common.Build.props')" />
+
+  <!--
+    Tests contra EF Core de verdad (Sqlite en memoria): que la proyección expandida se traduce a SQL, también con
+    propiedades sombra (EF.Property), y que un mapeo y una proyección del mismo par dan lo mismo. También el ejemplo
+    de extensión con Mapperly (MIT, generador de código).
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Remove="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(KitpymesRoot)Kitpymes.Core.Mapper\Kitpymes.Core.Mapper.csproj" />
+    <ProjectReference Include="$(KitpymesRoot)tests\Kitpymes.Core.Mapper.Tests.Ok\Kitpymes.Core.Mapper.Tests.Ok.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
+    <PackageReference Include="Riok.Mapperly" Version="4.2.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />
+    <PackageReference Include="MSTest.TestAdapter" Version="3.11.1" />
+    <PackageReference Include="MSTest.TestFramework" Version="3.11.1" />
+    <PackageReference Include="coverlet.collector" Version="10.1.1" PrivateAssets="all" IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive" />
+  </ItemGroup>
+
+</Project>
