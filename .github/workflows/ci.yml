@@ -1,0 +1,393 @@
+name: ci
+
+# Compila y pasa los tests en cada subida, a master o a cualquier rama. El resultado
+# aparece en el PR de la rama (que abre solo auto-pr.yml).
+# En master, si la versión del proyecto aún no tiene etiqueta (vX.Y.Z), además
+# publica en NuGet y crea la etiqueta y la release en GitHub. Fusionar el PR que
+# sube la versión es, por tanto, la orden de publicar.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Una subida nueva a la misma rama cancela la ejecución anterior, salvo en master:
+# allí no se corta nunca una publicación a medias.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  LIBRERIA: Kitpymes.Core.Mapper
+
+jobs:
+  # El primer commit de master sólo trae la pipeline, sin la librería: así no puede publicar nada
+  # antes del primer PR. Sin la librería, los demás jobs se omiten.
+  libreria:
+    runs-on: ubuntu-latest
+    outputs:
+      existe: ${{ steps.mirar.outputs.existe }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: mirar
+        run: |
+          if [ -f "$LIBRERIA/$LIBRERIA.csproj" ]; then echo "existe=true" >> "$GITHUB_OUTPUT"; else
+            echo "existe=false" >> "$GITHUB_OUTPUT"; echo "Todavía no está $LIBRERIA/$LIBRERIA.csproj: no hay nada que compilar ni publicar."; fi
+
+  build-test:
+    needs: libreria
+    if: needs.libreria.outputs.existe == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restaurar
+        run: dotnet restore Solution.sln
+
+      # La publicación exige que las notas empiecen exactamente por "# v.<versión>" (sin BOM). Se comprueba en
+      # cada rama, no sólo al publicar (Validations 2.3.0 se fusionó con un BOM y master no publicó). Para
+      # demostrar que la comprobación sirve, también se pasa a una copia con BOM, que tiene que fallar.
+      - name: Comprobar las notas de la versión
+        run: |
+          version=$(dotnet msbuild $LIBRERIA/$LIBRERIA.csproj -getProperty:Version -p:Configuration=Release)
+          comprobar() { [ "$(head -n 1 "$1" | tr -d '\r')" = "# v.$version" ]; }
+          if ! comprobar docs/RELEASE_NOTES.txt; then
+            echo "::error::docs/RELEASE_NOTES.txt tiene que empezar por '# v.$version' (sin BOM). Empieza por: $(head -n 1 docs/RELEASE_NOTES.txt | od -c | head -n 2)"
+            exit 1
+          fi
+          printf '\xef\xbb\xbf' > /tmp/notas-con-bom.txt
+          cat docs/RELEASE_NOTES.txt >> /tmp/notas-con-bom.txt
+          if comprobar /tmp/notas-con-bom.txt; then
+            echo "::error::La comprobación de las notas no detecta un BOM."
+            exit 1
+          fi
+          echo "Notas de la $version correctas; la copia con BOM se rechaza."
+
+      # El analizador de hilos estuvo años sin ejecutarse en las librerías (Update en vez de Include):
+      # se comprueba que el paquete está referenciado y que VSTHRD110 es un error en cada proyecto que no es de tests.
+      - name: Comprobar Microsoft.VisualStudio.Threading.Analyzers
+        run: |
+          for p in $(git ls-files '*.csproj' | grep -vi -e test -e benchmark); do
+            assets="$(dirname "$p")/obj/project.assets.json"
+            grep -q '"Microsoft.VisualStudio.Threading.Analyzers/' "$assets" || { echo "::error::$p no referencia Microsoft.VisualStudio.Threading.Analyzers."; exit 1; }
+            errores=$(dotnet msbuild "$p" -p:Configuration=Debug -getProperty:WarningsAsErrors)
+            echo "$errores" | grep -q 'VSTHRD110' || { echo "$errores"; echo "::error::$p no trata VSTHRD110 como error."; exit 1; }
+            echo "$p: Threading.Analyzers referenciado y VSTHRD110 como error."
+          done
+
+      # Prueba de que el analizador se ejecuta de verdad: un fichero temporal con una Task descartada en un
+      # método síncrono tiene que dar "error VSTHRD110" con TreatWarningsAsErrors y MSBuildTreatWarningsAsErrors
+      # activos y desactivados (Common.Build.props pone MSBuildTreatWarningsAsErrors=true en Debug: si no se
+      # desactiva también, la vuelta "false" no prueba que VSTHRD110 sea error por sí solo).
+      # La salida de dotnet no se muestra si todo va bien: sus "error VSTHRD110" saldrían como anotaciones de error.
+      - name: Prueba de que VSTHRD110 para la compilación
+        run: |
+          p=$LIBRERIA/$LIBRERIA.csproj
+          f="$LIBRERIA/ComprobacionVsthrd110.cs"
+          printf 'namespace Kitpymes.Comprobacion\n{\n    internal static class ComprobacionVsthrd110\n    {\n        internal static void Descartar() { System.Threading.Tasks.Task.Delay(1); }\n    }\n}\n' > "$f"
+          for twae in true false; do
+            if dotnet build "$p" --no-restore -c Debug -p:TreatWarningsAsErrors=$twae -p:MSBuildTreatWarningsAsErrors=$twae > vsthrd110.log 2>&1; then
+              rm "$f"; echo "::error::$p compila con una Task descartada (TreatWarningsAsErrors=$twae): VSTHRD110 no para la compilación."; exit 1
+            fi
+            if ! grep -q 'error VSTHRD110' vsthrd110.log; then
+              rm "$f"; sed 's/error/fallo/g' vsthrd110.log; echo "::error::La compilación falló, pero no por error VSTHRD110 (TreatWarningsAsErrors=$twae)."; exit 1
+            fi
+            echo "$p: error VSTHRD110 con TreatWarningsAsErrors=$twae."
+          done
+          rm "$f"
+
+      - name: Compilar
+        run: dotnet build Solution.sln --no-restore -c Debug
+
+      - name: Tests
+        run: dotnet test Solution.sln --no-build -c Debug --collect:"XPlat Code Coverage" --results-directory cobertura
+
+      # Porcentaje de líneas de la librería, uniendo los informes de los proyectos de tests (una línea cuenta
+      # como cubierta si algún proyecto la ejecuta). Para la pipeline por debajo del 90 %.
+      - name: Cobertura (mínimo 90 %)
+        shell: python
+        run: |
+          import glob, os, xml.etree.ElementTree as ET
+          files = glob.glob("cobertura/**/coverage.cobertura.xml", recursive=True)
+          if not files:
+              print("::error::No se generó el informe de cobertura.")
+              raise SystemExit(1)
+          lines = {}
+          for f in files:
+              root = ET.parse(f).getroot()
+              sources = [x.text or "" for x in root.iter("source")]
+              base = sources[0] if sources else ""
+              for package in root.iter("package"):
+                  name = package.get("name")
+                  if name != os.environ["LIBRERIA"]:
+                      continue
+                  for cls in package.iter("class"):
+                      filename = os.path.normpath(os.path.join(base, cls.get("filename")))
+                      for line in cls.iter("line"):
+                          key = (filename, line.get("number"))
+                          lines[key] = lines.get(key, False) or int(line.get("hits", "0")) > 0
+          if not lines:
+              print("::error::El informe de cobertura no tiene líneas de la librería.")
+              raise SystemExit(1)
+          covered = sum(1 for hit in lines.values() if hit)
+          pct = 100 * covered / len(lines)
+          missing = {}
+          for (filename, number), hit in lines.items():
+              if not hit:
+                  missing.setdefault(os.path.basename(filename), []).append(int(number))
+          out = [f"### Cobertura de líneas: {pct:.1f} % ({covered}/{len(lines)})", "", "Líneas sin cubrir:"]
+          out += [f"- {f}: {sorted(set(v))}" for f, v in sorted(missing.items())]
+          print("\n".join(out))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(out) + "\n")
+          if pct < 90:
+              print(f"::error::Cobertura de líneas {pct:.1f} %, por debajo del 90 %.")
+              raise SystemExit(1)
+
+      # Empaqueta igual que el job publish, para ver en la rama que la publicación no fallará al empaquetar.
+      - name: Empaquetar como en la publicación
+        run: |
+          dotnet pack $LIBRERIA/$LIBRERIA.csproj -c Release -o artifacts-prueba
+          ls artifacts-prueba
+          n=$(ls artifacts-prueba/*.nupkg | wc -l)
+          [ "$n" -eq 1 ] || { echo "::error::Salen $n paquetes y tiene que salir 1."; exit 1; }
+          # La validación de paquete no dice nada cuando pasa: deja un semáforo en la carpeta intermedia al
+          # terminar. Que la versión de referencia esté en la caché no lo prueba (se baja al restaurar).
+          semaforo() { find "$1" -name 'Microsoft.NET.ApiCompat.ValidatePackage.semaphore' 2>/dev/null | grep -q .; }
+          base=$(grep -o '<PackageValidationBaselineVersion>[^<]*' docs/props/Pack.Build.props | sed 's/.*>//' || true)
+          if [ -z "$base" ]; then
+            # Primera versión: no hay con qué comparar. Al publicarla, la rama siguiente añade
+            # PackageValidationBaselineVersion y desde entonces este paso exige el semáforo.
+            version=$(dotnet msbuild $LIBRERIA/$LIBRERIA.csproj -getProperty:Version -p:Configuration=Release)
+            [ "$version" = "1.0.0" ] || { echo "::error::Falta PackageValidationBaselineVersion en docs/props/Pack.Build.props (versión $version)."; exit 1; }
+            echo "Primera versión (1.0.0): sin versión de referencia."
+            exit 0
+          fi
+          semaforo "$LIBRERIA/obj/Release" || { echo "::error::La validación de paquete no se ha ejecutado contra la $base."; exit 1; }
+          echo "Validación de paquete contra la $base: ejecutada."
+          # Caso malo: empaquetado sin validación, en otra carpeta intermedia, no puede dejar semáforo.
+          dotnet pack $LIBRERIA/$LIBRERIA.csproj -c Release -o artifacts-sin-validar -p:EnablePackageValidation=false -p:IntermediateOutputPath=obj/sinvalidar/ > /dev/null
+          if semaforo "$LIBRERIA/obj/sinvalidar"; then
+            echo "::error::La comprobación de la validación de paquete da por buena una validación que no se ha ejecutado."; exit 1
+          fi
+          echo "Caso malo: sin validación de paquete no hay semáforo."
+
+  # En cada rama, comprueba que el paquete no lleva ASP.NET Core ni Kitpymes.Core.Shared a quien lo usa,
+  # ni directo ni a través de sus dependencias. Los scripts se prueban antes contra casos falsos y reales.
+  pack-check:
+    needs: libreria
+    if: needs.libreria.outputs.existe == 'true' && github.ref != 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Probar el chequeo de dependencias
+        run: bash .github/scripts/test-check-dependencias.sh
+
+      - name: Empaquetar (sin publicar)
+        run: dotnet pack $LIBRERIA/$LIBRERIA.csproj -c Release -o artifacts
+
+      - name: Comprobar el paquete y lo que recibe quien lo usa
+        run: |
+          chk="$GITHUB_WORKSPACE/.github/scripts/check-dependencias.sh"
+          unzip -p artifacts/$LIBRERIA.*[0-9].nupkg '*.nuspec' | tee mapper.nuspec
+          bash "$chk" nuspec mapper.nuspec
+          ver=$(ls artifacts | grep -oP "^${LIBRERIA//./\\.}\.\K[0-9][^/]*(?=\.nupkg$)")
+          test -n "$ver" || { echo "::error::No se ha podido leer la versión del paquete."; exit 1; }
+          # Caché propia y mapeo de orígenes: Kitpymes.Core.Mapper sólo puede venir del recién empaquetado.
+          mkdir -p /tmp/consumidor && cd /tmp/consumidor
+          export NUGET_PACKAGES=/tmp/consumidor/packages
+          dotnet new classlib -f net10.0 -o . --force > /dev/null
+          cat > nuget.config <<XML
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="local" value="$GITHUB_WORKSPACE/artifacts" />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+            <packageSourceMapping>
+              <packageSource key="local"><package pattern="Kitpymes.Core.Mapper*" /></packageSource>
+              <packageSource key="nuget.org"><package pattern="*" /></packageSource>
+            </packageSourceMapping>
+          </configuration>
+          XML
+          dotnet add package $LIBRERIA --version "$ver"
+          bash "$chk" assets obj/project.assets.json "$LIBRERIA/$ver" "Microsoft.Extensions.DependencyInjection.Abstractions/10.0.0"
+
+      # Caso malo con un paquete real: Kitpymes.Core.Results 1.1.1 lleva ASP.NET Core y Shared. El chequeo
+      # del consumidor TIENE que fallar con él; si no, no sirve.
+      - name: El chequeo del consumidor detecta un paquete real con ASP.NET Core
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/consumidor-malo && cd /tmp/consumidor-malo
+          export NUGET_PACKAGES=/tmp/consumidor-malo/packages
+          dotnet new classlib -f net10.0 -o . --force > /dev/null
+          dotnet add package Kitpymes.Core.Results --version 1.1.1
+          if bash "$GITHUB_WORKSPACE/.github/scripts/check-dependencias.sh" assets obj/project.assets.json "Kitpymes.Core.Results/1.1.1" | sed 's/::error:://'; then
+            echo "::error::El chequeo no detecta ASP.NET Core ni Shared en Kitpymes.Core.Results 1.1.1: no sirve."; exit 1
+          fi
+          echo "Detectado, como se esperaba."
+
+  # En cada rama, tests de mutación con Stryker.NET: un mutante que sobrevive es un test que falta.
+  # Para la pipeline por debajo del 80 %, con --break-at y además sobre el informe (probado contra informes falsos).
+  mutation:
+    needs: libreria
+    if: needs.libreria.outputs.existe == 'true' && github.ref != 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Probar la comprobación del umbral de mutación
+        run: bash .github/scripts/test-check-mutacion.sh
+
+      - name: Instalar Stryker.NET
+        run: dotnet tool install -g dotnet-stryker --version 5.1.0
+
+      # Los mutantes los pueden matar los dos proyectos de tests: los de la librería y los de EF Core.
+      - name: Mutación
+        working-directory: Kitpymes.Core.Mapper.Tests
+        run: >-
+          dotnet stryker --project Kitpymes.Core.Mapper.csproj
+          --test-project Kitpymes.Core.Mapper.Tests.csproj
+          --test-project ../tests/Kitpymes.Core.Mapper.Tests.EntityFrameworkCore/Kitpymes.Core.Mapper.Tests.EntityFrameworkCore.csproj
+          --reporter markdown --reporter json --reporter progress --break-at 80 --output ../mutacion/mapper
+
+      - name: Umbral de mutación (80 %)
+        run: python3 .github/scripts/check-mutacion.py 80 $(find mutacion -name mutation-report.json)
+
+      - name: Resumen
+        if: always()
+        run: find mutacion -name '*.md' -exec cat {} + | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Mutantes vivos
+        if: always()
+        shell: python
+        run: |
+          import glob, json, os
+          for f in glob.glob("mutacion/**/mutation-report.json", recursive=True):
+              data = json.load(open(f, encoding="utf-8"))
+              for name, file in data["files"].items():
+                  lines = file["source"].split("\n")
+                  for m in file["mutants"]:
+                      if m["status"] in ("Survived", "NoCoverage"):
+                          line = m["location"]["start"]["line"]
+                          print(f"{m['status']}: {os.path.basename(name)}:{line} {m['mutatorName']} -> {m.get('replacement', '')!r} | {lines[line - 1].strip()}")
+
+  # En cada rama, compara con AutoMapper 12 (informativo). La tabla sale en el log y en el resumen.
+  benchmark:
+    needs: libreria
+    if: needs.libreria.outputs.existe == 'true' && github.ref != 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Benchmark contra AutoMapper
+        run: dotnet run -c Release --project benchmarks/Kitpymes.Core.Mapper.Benchmarks/Kitpymes.Core.Mapper.Benchmarks.csproj -- --job short --filter '*' --exporters github --memory
+
+      - name: Resumen
+        if: always()
+        run: find BenchmarkDotNet.Artifacts -name '*-report-github.md' -exec cat {} + | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+  # En cada rama (lo que luego es un PR) comprueba que nuget.org confía en este repo
+  # (política de Trusted Publishing). Sin ella, fusionar un cambio de versión fallaría al
+  # publicar; así se ve antes de fusionar. No publica nada: pide una clave temporal y la descarta.
+  nuget-policy:
+    needs: libreria
+    if: needs.libreria.outputs.existe == 'true' && github.ref != 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Comprobar la política de NuGet
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: kitpymes
+
+      - name: Avisar si falta la política
+        if: failure()
+        run: |
+          echo "::error::Falta la política de Trusted Publishing de este repo en nuget.org (cuenta Kitpymes): owner kitpymes, repositorio ${{ github.event.repository.name }}, workflow ci.yml, sin entorno, glob Kitpymes.Core.Mapper*. Sin ella no se puede publicar."
+          exit 1
+
+  publish:
+    # Sólo en master y sólo si los tests han pasado.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.libreria.outputs.existe == 'true'
+    needs: [libreria, build-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # crear la etiqueta y la release
+      id-token: write   # Trusted Publishing: nuget.org da una clave temporal sin guardar ninguna aquí
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Ver si esta versión ya está publicada
+        id: version
+        run: |
+          version=$(dotnet msbuild $LIBRERIA/$LIBRERIA.csproj -getProperty:Version -p:Configuration=Release)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "La versión $version ya tiene etiqueta: no hay nada que publicar."
+            echo "publicar=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sacar las notas de esta versión
+        if: steps.version.outputs.publicar == 'true'
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          primera=$(head -n 1 docs/RELEASE_NOTES.txt | tr -d '\r')
+          if [ "$primera" != "# v.$version" ]; then
+            echo "Las release notes empiezan por '$primera' y deberían empezar por '# v.$version'. No se publica."
+            exit 1
+          fi
+          awk 'NR > 1 && /^# v\./ { exit } NR > 1' docs/RELEASE_NOTES.txt | tr -d '\r' > notas.md
+
+      # Sólo la librería: un proyecto de tests o de benchmark en la solución cortaría la publicación.
+      - name: Empaquetar
+        if: steps.version.outputs.publicar == 'true'
+        run: dotnet pack $LIBRERIA/$LIBRERIA.csproj -c Release -o artifacts
+
+      - name: Iniciar sesión en NuGet (clave temporal de 1 hora)
+        if: steps.version.outputs.publicar == 'true'
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: kitpymes
+
+      - name: Publicar en NuGet
+        if: steps.version.outputs.publicar == 'true'
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      # Después de NuGet: si algo falla antes, no queda una release de un paquete que no existe.
+      - name: Crear etiqueta y release en GitHub
+        if: steps.version.outputs.publicar == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          gh release create "v$version" --target "$GITHUB_SHA" --title "v$version" --notes-file notas.md
